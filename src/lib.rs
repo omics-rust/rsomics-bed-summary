@@ -1,20 +1,9 @@
 #![allow(clippy::cast_precision_loss)] // u64→f64 matches bedtools' float-division semantics
 
-//! Statistical summary of BED intervals per chromosome.
+//! Statistical summary of BED intervals per chromosome — bedtools summary equivalent.
 //!
-//! Implements `bedtools summary`: for each chromosome in the genome file emit
-//! `num_ivls`, `total_ivl_bp` (raw, non-merged), `chrom_frac_genome`,
-//! `frac_all_ivls`, `frac_all_bp`, `min`, `max`, and `mean` interval length.
-//! Chromosomes with no intervals emit `-1` for min/max/mean (exact upstream
-//! behaviour, confirmed by black-box testing).
-//!
-//! Trailing TAB: bedtools emits a trailing `\t` after the mean field on rows
-//! that have at least one interval; rows with zero intervals and the final
-//! "all" summary row have no trailing tab.  We replicate this exactly.
-//!
-//! Algorithm: one pass over the BED file accumulating per-chrom stats into a
-//! fixed-length array indexed by the genome-file chromosome order.  O(N) in
-//! BED records; O(C) space in chromosome count.
+//! Chromosomes with no intervals emit `-1` for min/max/mean (exact upstream behaviour).
+//! Rows with intervals get a trailing `\t` after the mean column (upstream quirk replicated).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -56,9 +45,6 @@ impl ChromStats {
 
 type GenomeTable = (Vec<(String, ChromStats)>, HashMap<String, usize>);
 
-/// Load genome file (`chrom\tsize` lines) preserving order.
-///
-/// Returns the ordered list of `(chrom, stats)` and a name→index map.
 fn load_genome(path: &Path) -> Result<GenomeTable> {
     let file = File::open(path)
         .map_err(|e| RsomicsError::InvalidInput(format!("{}: {e}", path.display())))?;
@@ -90,18 +76,9 @@ fn load_genome(path: &Path) -> Result<GenomeTable> {
     Ok((order, idx))
 }
 
-/// Compute per-chromosome summary statistics over a BED file.
-///
-/// Output columns (tab-separated, header included):
-/// `chrom  chrom_length  num_ivls  total_ivl_bp  chrom_frac_genome  frac_all_ivls  frac_all_bp  min  max  mean`
-///
-/// Numeric precision: 9 decimal places for all fractions and mean on per-chrom
-/// rows, matching bedtools; the final "all" row uses `1.0` for the three
-/// fraction columns (also matching bedtools).
 pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
     let (mut stats, idx) = load_genome(genome)?;
 
-    // First pass: accumulate per-chrom stats.
     let bed_file = File::open(bed)
         .map_err(|e| RsomicsError::InvalidInput(format!("{}: {e}", bed.display())))?;
     let reader = BufReader::new(bed_file);
@@ -134,7 +111,6 @@ pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
         stats[*i].1.add(end.saturating_sub(start));
     }
 
-    // Compute totals for the "all" summary row.
     let total_genome: u64 = stats.iter().map(|(_, s)| s.len).sum();
     let total_ivls: u64 = stats.iter().map(|(_, s)| s.count).sum();
     let total_bp: u64 = stats.iter().map(|(_, s)| s.total_bp).sum();
@@ -158,14 +134,12 @@ pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
 
     let mut out = BufWriter::with_capacity(256 * 1024, out);
 
-    // Header (no trailing tab).
     writeln!(
         out,
         "chrom\tchrom_length\tnum_ivls\ttotal_ivl_bp\tchrom_frac_genome\tfrac_all_ivls\tfrac_all_bp\tmin\tmax\tmean"
     )
     .map_err(RsomicsError::Io)?;
 
-    // Per-chromosome rows.
     for (chrom, s) in &stats {
         let chrom_frac = s.len as f64 / total_genome as f64;
         let frac_ivls = if total_ivls == 0 {
@@ -180,7 +154,6 @@ pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
         };
 
         if s.count == 0 {
-            // Zero-interval rows: no trailing tab, -1 for min/max/mean.
             writeln!(
                 out,
                 "{chrom}\t{}\t0\t0\t{chrom_frac:.9}\t{frac_ivls:.9}\t{frac_bp:.9}\t-1\t-1\t-1",
@@ -189,8 +162,7 @@ pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
             .map_err(RsomicsError::Io)?;
         } else {
             let mean = s.total_bp as f64 / s.count as f64;
-            // Rows with intervals: trailing tab after mean (upstream quirk).
-            // Trailing tab after mean on rows that have intervals: upstream quirk.
+            // Trailing tab after mean: upstream quirk, replicated byte-for-byte.
             writeln!(
                 out,
                 "{chrom}\t{}\t{}\t{}\t{chrom_frac:.9}\t{frac_ivls:.9}\t{frac_bp:.9}\t{}\t{}\t{mean:.9}\t",
@@ -200,7 +172,6 @@ pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
         }
     }
 
-    // "all" summary row: fractions are exactly "1.0", no trailing tab.
     writeln!(
         out,
         "all\t{total_genome}\t{total_ivls}\t{total_bp}\t1.0\t1.0\t1.0\t{all_min}\t{all_max}\t{all_mean:.9}",

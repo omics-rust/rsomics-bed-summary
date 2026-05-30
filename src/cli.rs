@@ -11,26 +11,20 @@ pub const META: ToolMeta = ToolMeta {
     version: env!("CARGO_PKG_VERSION"),
 };
 
-/// bedtools summary uses multi-char single-dash flags (`-i`, `-g`);
-/// clap supports single-char shorts so `-i`/`-g` map directly.
 #[derive(Parser, Debug)]
 #[command(
     name = "rsomics-bed-summary",
     version,
-    about = "Statistical summary of BED intervals per chromosome — Rust port of bedtools summary",
+    about = "Statistical summary of BED intervals per chromosome (bedtools summary equivalent)",
     long_about = None,
     disable_help_flag = true
 )]
 pub struct Cli {
-    /// Input BED file (intervals to summarise).
-    ///
-    /// Maps to bedtools `-i`.
+    /// Input BED file.
     #[arg(short = 'i', long = "input", value_name = "FILE")]
     pub input: PathBuf,
 
-    /// Genome file (`chrom<TAB>size` lines, one per chromosome).
-    ///
-    /// Maps to bedtools `-g`.
+    /// Genome sizes file (`chrom<TAB>size` lines).
     #[arg(short = 'g', long = "genome", value_name = "FILE")]
     pub genome: PathBuf,
 
@@ -64,7 +58,7 @@ impl Tool for Cli {
 pub static HELP: HelpSpec = HelpSpec {
     name: env!("CARGO_PKG_NAME"),
     version: env!("CARGO_PKG_VERSION"),
-    tagline: "Statistical summary of BED intervals per chromosome — Rust port of bedtools summary.",
+    tagline: "Statistical summary of BED intervals per chromosome (bedtools summary equivalent).",
     origin: Some(Origin {
         upstream: "bedtools summary",
         upstream_license: "MIT",
