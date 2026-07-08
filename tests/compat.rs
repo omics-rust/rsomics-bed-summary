@@ -46,6 +46,36 @@ fn small_fixture_golden() {
     );
 }
 
+/// A record with start > end must fail loud (matching bedtools' rejection),
+/// not fold a bogus row into the summary.
+#[test]
+fn malformed_start_gt_end_errors() {
+    let mut buf = Vec::new();
+    let err = summary(
+        &golden("malformed_start_gt_end.bed"),
+        &golden("genome.txt"),
+        &mut buf,
+    )
+    .expect_err("start > end must be rejected");
+    assert!(
+        err.to_string().contains("start > end"),
+        "unexpected error message: {err}"
+    );
+    assert!(buf.is_empty(), "no summary bytes may be emitted on error");
+}
+
+/// A negative coordinate must fail loud (bedtools rejects it too).
+#[test]
+fn malformed_negative_coord_errors() {
+    let mut buf = Vec::new();
+    summary(
+        &golden("malformed_negative.bed"),
+        &golden("genome.txt"),
+        &mut buf,
+    )
+    .expect_err("negative coordinate must be rejected");
+}
+
 /// Byte-identical live check against the installed bedtools binary.
 ///
 /// Skipped gracefully when bedtools is absent or not v2.31.x.

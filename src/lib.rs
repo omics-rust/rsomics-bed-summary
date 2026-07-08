@@ -102,6 +102,11 @@ pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
         let end: u64 = end_s
             .parse()
             .map_err(|e| RsomicsError::InvalidInput(format!("end parse '{end_s}': {e}")))?;
+        if start > end {
+            return Err(RsomicsError::InvalidInput(format!(
+                "malformed BED record (start > end): {chrom}\t{start}\t{end}"
+            )));
+        }
         let i = idx.get(chrom).ok_or_else(|| {
             RsomicsError::InvalidInput(format!(
                 "requested chromosome {chrom} does not exist in the genome file {}. Exiting.",
