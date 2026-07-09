@@ -11,6 +11,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use rsomics_common::{Result, RsomicsError};
+use serde::Serialize;
 
 struct ChromStats {
     len: u64,
@@ -41,6 +42,23 @@ impl ChromStats {
             self.max = interval_len;
         }
     }
+}
+
+/// One summary row — a chromosome, or the trailing `all` totals row (always
+/// last). `min`/`max` are `-1` when the chromosome has no intervals, matching
+/// bedtools summary's sentinel.
+#[derive(Serialize)]
+pub struct ChromRow {
+    pub chrom: String,
+    pub chrom_length: u64,
+    pub num_ivls: u64,
+    pub total_ivl_bp: u64,
+    pub chrom_frac_genome: f64,
+    pub frac_all_ivls: f64,
+    pub frac_all_bp: f64,
+    pub min: i64,
+    pub max: i64,
+    pub mean: f64,
 }
 
 type GenomeTable = (Vec<(String, ChromStats)>, HashMap<String, usize>);
@@ -76,7 +94,13 @@ fn load_genome(path: &Path) -> Result<GenomeTable> {
     Ok((order, idx))
 }
 
-pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
+/// Parse the BED and genome files and compute the per-chromosome summary,
+/// with the `all` totals row appended last.
+///
+/// # Errors
+/// Propagates parse errors, and a malformed BED record (start > end, or a
+/// chromosome absent from the genome file).
+pub fn compute_summary(bed: &Path, genome: &Path) -> Result<Vec<ChromRow>> {
     let (mut stats, idx) = load_genome(genome)?;
 
     let bed_file = File::open(bed)
@@ -137,15 +161,8 @@ pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
         total_bp as f64 / total_ivls as f64
     };
 
-    let mut out = BufWriter::with_capacity(256 * 1024, out);
-
-    writeln!(
-        out,
-        "chrom\tchrom_length\tnum_ivls\ttotal_ivl_bp\tchrom_frac_genome\tfrac_all_ivls\tfrac_all_bp\tmin\tmax\tmean"
-    )
-    .map_err(RsomicsError::Io)?;
-
-    for (chrom, s) in &stats {
+    let mut rows = Vec::with_capacity(stats.len() + 1);
+    for (chrom, s) in stats {
         let chrom_frac = s.len as f64 / total_genome as f64;
         let frac_ivls = if total_ivls == 0 {
             0.0f64
@@ -157,31 +174,103 @@ pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
         } else {
             s.total_bp as f64 / total_bp as f64
         };
+        let (min, max, mean) = if s.count == 0 {
+            (-1, -1, -1.0)
+        } else {
+            (
+                s.min as i64,
+                s.max as i64,
+                s.total_bp as f64 / s.count as f64,
+            )
+        };
+        rows.push(ChromRow {
+            chrom,
+            chrom_length: s.len,
+            num_ivls: s.count,
+            total_ivl_bp: s.total_bp,
+            chrom_frac_genome: chrom_frac,
+            frac_all_ivls: frac_ivls,
+            frac_all_bp: frac_bp,
+            min,
+            max,
+            mean,
+        });
+    }
+    rows.push(ChromRow {
+        chrom: "all".to_string(),
+        chrom_length: total_genome,
+        num_ivls: total_ivls,
+        total_ivl_bp: total_bp,
+        chrom_frac_genome: 1.0,
+        frac_all_ivls: 1.0,
+        frac_all_bp: 1.0,
+        min: all_min as i64,
+        max: all_max as i64,
+        mean: all_mean,
+    });
 
-        if s.count == 0 {
+    Ok(rows)
+}
+
+/// Write the bedtools-style summary table. `rows` must be exactly what
+/// [`compute_summary`] returns: zero or more chromosome rows followed by the
+/// trailing `all` totals row.
+///
+/// # Errors
+/// Propagates write errors.
+pub fn write_text(rows: &[ChromRow], out: &mut dyn Write) -> Result<()> {
+    let mut out = BufWriter::with_capacity(256 * 1024, out);
+
+    writeln!(
+        out,
+        "chrom\tchrom_length\tnum_ivls\ttotal_ivl_bp\tchrom_frac_genome\tfrac_all_ivls\tfrac_all_bp\tmin\tmax\tmean"
+    )
+    .map_err(RsomicsError::Io)?;
+
+    let split = rows.len() - 1;
+    let (chrom_rows, all_row) = rows.split_at(split);
+
+    for r in chrom_rows {
+        if r.num_ivls == 0 {
             writeln!(
                 out,
-                "{chrom}\t{}\t0\t0\t{chrom_frac:.9}\t{frac_ivls:.9}\t{frac_bp:.9}\t-1\t-1\t-1",
-                s.len,
+                "{}\t{}\t0\t0\t{:.9}\t{:.9}\t{:.9}\t-1\t-1\t-1",
+                r.chrom, r.chrom_length, r.chrom_frac_genome, r.frac_all_ivls, r.frac_all_bp,
             )
             .map_err(RsomicsError::Io)?;
         } else {
-            let mean = s.total_bp as f64 / s.count as f64;
             // Trailing tab after mean: upstream quirk, replicated byte-for-byte.
             writeln!(
                 out,
-                "{chrom}\t{}\t{}\t{}\t{chrom_frac:.9}\t{frac_ivls:.9}\t{frac_bp:.9}\t{}\t{}\t{mean:.9}\t",
-                s.len, s.count, s.total_bp, s.min, s.max,
+                "{}\t{}\t{}\t{}\t{:.9}\t{:.9}\t{:.9}\t{}\t{}\t{:.9}\t",
+                r.chrom,
+                r.chrom_length,
+                r.num_ivls,
+                r.total_ivl_bp,
+                r.chrom_frac_genome,
+                r.frac_all_ivls,
+                r.frac_all_bp,
+                r.min,
+                r.max,
+                r.mean,
             )
             .map_err(RsomicsError::Io)?;
         }
     }
 
+    let a = &all_row[0];
     writeln!(
         out,
-        "all\t{total_genome}\t{total_ivls}\t{total_bp}\t1.0\t1.0\t1.0\t{all_min}\t{all_max}\t{all_mean:.9}",
+        "all\t{}\t{}\t{}\t1.0\t1.0\t1.0\t{}\t{}\t{:.9}",
+        a.chrom_length, a.num_ivls, a.total_ivl_bp, a.min, a.max, a.mean,
     )
     .map_err(RsomicsError::Io)?;
 
     out.flush().map_err(RsomicsError::Io)
+}
+
+/// # Errors
+/// Propagates parse and write errors.
+pub fn summary(bed: &Path, genome: &Path, out: &mut dyn Write) -> Result<()> {
+    write_text(&compute_summary(bed, genome)?, out)
 }

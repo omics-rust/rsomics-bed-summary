@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rsomics_common::{CommonFlags, Result, RsomicsError, Tool, ToolMeta};
+use rsomics_common::{CommonFlags, Result, RsomicsError, ToolMeta};
 use rsomics_help::{Example, FlagSpec, HelpSpec, Origin, Section};
 
-use rsomics_bed_summary::summary;
+use rsomics_bed_summary::{ChromRow, compute_summary, write_text};
 
 pub const META: ToolMeta = ToolMeta {
     name: env!("CARGO_PKG_NAME"),
@@ -36,22 +36,24 @@ pub struct Cli {
     pub common: CommonFlags,
 }
 
-impl Tool for Cli {
-    fn meta() -> ToolMeta {
-        META
-    }
+impl Cli {
+    /// Compute the per-chromosome summary and, unless `--json` is set, write
+    /// the bedtools-style text table to the chosen output. Under `--json` the
+    /// framework serialises the returned rows into the result envelope, so
+    /// nothing is written to stdout here.
+    pub fn report(self) -> Result<Vec<ChromRow>> {
+        let rows = compute_summary(&self.input, &self.genome)?;
 
-    fn common(&self) -> &CommonFlags {
-        &self.common
-    }
+        if !self.common.json {
+            let mut out: Box<dyn std::io::Write> = if self.output == "-" {
+                Box::new(std::io::stdout().lock())
+            } else {
+                Box::new(std::fs::File::create(&self.output).map_err(RsomicsError::Io)?)
+            };
+            write_text(&rows, &mut out)?;
+        }
 
-    fn execute(self) -> Result<()> {
-        let mut out: Box<dyn std::io::Write> = if self.output == "-" {
-            Box::new(std::io::stdout().lock())
-        } else {
-            Box::new(std::fs::File::create(&self.output).map_err(RsomicsError::Io)?)
-        };
-        summary(&self.input, &self.genome, &mut out)
+        Ok(rows)
     }
 }
 
